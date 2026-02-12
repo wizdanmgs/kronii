@@ -1,19 +1,22 @@
 use chrono::Utc;
 use sqlx::SqlitePool;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tokio::time::{Duration, sleep};
 
 use crate::job::Job;
 use crate::state;
 use crate::worker::execute_job;
 
-pub async fn start_scheduler(jobs: Vec<Job>, pool: SqlitePool) {
+pub async fn start_scheduler(jobs: Vec<Job>, pool: SqlitePool, semaphore: Arc<Semaphore>) {
     for job in jobs {
         let pool_clone = pool.clone();
-        tokio::spawn(schedule_job(job, pool_clone));
+        let sem_clone = semaphore.clone();
+        tokio::spawn(schedule_job(job, pool_clone, sem_clone));
     }
 }
 
-async fn schedule_job(job: Job, pool: SqlitePool) {
+async fn schedule_job(job: Job, pool: SqlitePool, semaphore: Arc<Semaphore>) {
     loop {
         if let Some(next) = job.next_run() {
             state::upsert_job(
@@ -38,7 +41,11 @@ async fn schedule_job(job: Job, pool: SqlitePool) {
             let job_clone = job.clone();
             let pool_clone = pool.clone();
 
+            // Acquire permit before executing job
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+
             tokio::spawn(async move {
+                let _permit = permit; // dropped automatically after spawn
                 execute_job(job_clone, pool_clone).await;
             });
         }

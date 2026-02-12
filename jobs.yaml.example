@@ -1,12 +1,60 @@
 jobs:
-  - name: "backup"
-    schedule: "0 */1 * * * *"
-    command: "echo Backup running"
-    retries: 3
-    timeout_seconds: 10
-
   - name: "heartbeat"
-    schedule: "*/10 * * * * *"
-    command: "echo Heartbeat"
+    schedule: "*/2 * * * * *"   # every 2 seconds
+    command: "echo Heartbeat check"
     retries: 1
     timeout_seconds: 5
+
+  - name: "system-health-check"
+    schedule: "*/10 * * * * *"    # every 10 seconds
+    command: "uptime"
+    retries: 2
+    timeout_seconds: 10
+
+  - name: "disk-usage-report"
+    schedule: "30 */1 * * * *"   # every 1 minute at second 30
+    command: "df -h"
+    retries: 2
+    timeout_seconds: 15
+
+  - name: "log-cleanup"
+    schedule: "0 */2 * * * *"    # every 2 minutes
+    command: "find /tmp -type f -mtime +1 -delete"
+    retries: 3
+    timeout_seconds: 20
+
+  - name: "database-backup"
+    schedule: "45 */1 * * * *"      # every 1 minute at second 45
+    command: "echo Simulating DB backup..."
+    retries: 3
+    timeout_seconds: 60
+
+  - name: "cache-clear"
+    schedule: "0 */2 * * * *"   # every 2 minutes
+    command: "echo Clearing cache"
+    retries: 2
+    timeout_seconds: 15
+
+  - name: "api-health-check"
+    schedule: "*/20 * * * * *"   # every 20 seconds
+    command: "curl -s -o /dev/null -w '%{http_code}' https://example.com || exit 1"
+    retries: 2
+    timeout_seconds: 10
+
+  - name: "memory-usage-check"
+    schedule: "45 */2 * * * *"   # every 2 minutes at second 45
+    command: "free -m"
+    retries: 1
+    timeout_seconds: 10
+
+  - name: "report-generator"
+    schedule: "0 */3 * * * *"     # every 3 minutes
+    command: "echo Generating daily report..."
+    retries: 2
+    timeout_seconds: 30
+
+  - name: "temporary-file-cleaner"
+    schedule: "0 */3 * * * *"    # every 3 minutes
+    command: "find /tmp -type f -mtime +2 -delete"
+    retries: 2
+    timeout_seconds: 25
