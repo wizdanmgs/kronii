@@ -1,0 +1,12 @@
+jobs:
+  - name: "backup"
+    schedule: "0 */1 * * * *"
+    command: "echo Backup running"
+    retries: 3
+    timeout_seconds: 10
+
+  - name: "heartbeat"
+    schedule: "*/10 * * * * *"
+    command: "echo Heartbeat"
+    retries: 1
+    timeout_seconds: 5
