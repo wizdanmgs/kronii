@@ -13,4 +13,3 @@ pub struct JobConfig {
     pub retries: u32,
     pub timeout_seconds: u64,
 }
-

@@ -20,4 +20,3 @@ impl Job {
         self.schedule.upcoming(Utc).next()
     }
 }
-
