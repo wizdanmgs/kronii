@@ -1,4 +1,5 @@
 mod config;
+mod db;
 mod job;
 mod scheduler;
 mod state;
@@ -7,11 +8,6 @@ mod worker;
 use clap::Parser;
 use std::fs;
 use tracing_subscriber::FmtSubscriber;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-
-use state::{SharedState, JobState};
 
 #[derive(Parser)]
 struct Args {
@@ -35,16 +31,8 @@ async fn main() -> anyhow::Result<()> {
         .map(job::Job::new)
         .collect::<Result<Vec<_>, _>>()?;
 
-    let state: SharedState = Arc::new(RwLock::new(HashMap::new()));
-    {
-        let mut write = state.write().await;
-        for job in &jobs {
-            write.insert(job.config.name.clone(), JobState::new(job.config.name.clone()));
-        }
-
-    }
-
-    scheduler::start_scheduler(jobs, state.clone()).await;
+    let pool = db::init_db("sqlite:scheduler.db").await?;
+    scheduler::start_scheduler(jobs, pool.clone()).await;
 
     tokio::signal::ctrl_c().await?;
     println!("Shutting down gracefully...");

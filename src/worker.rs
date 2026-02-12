@@ -1,35 +1,28 @@
 use chrono::Utc;
+use sqlx::SqlitePool;
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
-use tracing::{error, info};
 
 use crate::job::Job;
-use crate::state::{JobStatus, SharedState};
+use crate::state;
 
-pub async fn execute_job(job: Job, state: SharedState) {
+pub async fn execute_job(job: Job, pool: SqlitePool) {
     let mut attempts = 0;
 
-    {
-        let mut write = state.write().await;
-        if let Some(s) = write.get_mut(&job.config.name) {
-            s.status = JobStatus::Running;
-            s.last_run = Some(Utc::now());
-            s.attempts = 0;
-            s.last_error = None;
-        }
-    }
+    state::upsert_job(
+        &pool,
+        &job.config.name,
+        state::JobStatus::Idle,
+        Some(Utc::now()),
+        None,
+        0,
+        None,
+    )
+    .await
+    .ok();
 
     while attempts <= job.config.retries {
         attempts += 1;
-
-        {
-            let mut write = state.write().await;
-            if let Some(s) = write.get_mut(&job.config.name) {
-                s.attempts = attempts;
-            }
-        }
-
-        info!("Running job: {} (attempt {})", job.config.name, attempts);
 
         let result = timeout(
             Duration::from_secs(job.config.timeout_seconds),
@@ -39,35 +32,60 @@ pub async fn execute_job(job: Job, state: SharedState) {
 
         match result {
             Ok(Ok(_)) => {
-                let mut write = state.write().await;
-                if let Some(s) = write.get_mut(&job.config.name) {
-                    s.status = JobStatus::Success;
-                    info!("Job {} completed successfully", job.config.name);
-                }
+                state::upsert_job(
+                    &pool,
+                    &job.config.name,
+                    state::JobStatus::Success,
+                    Some(Utc::now()),
+                    None,
+                    attempts,
+                    None,
+                )
+                .await
+                .ok();
+
                 return;
             }
             Ok(Err(e)) => {
-                let mut write = state.write().await;
-                if let Some(s) = write.get_mut(&job.config.name) {
-                    s.last_error = Some(e.to_string());
-                    error!("Job {} failed: {}", job.config.name, e);
-                }
+                state::upsert_job(
+                    &pool,
+                    &job.config.name,
+                    state::JobStatus::Running,
+                    Some(Utc::now()),
+                    None,
+                    attempts,
+                    Some(e.to_string()),
+                )
+                .await
+                .ok();
             }
             Err(_) => {
-                let mut write = state.write().await;
-                if let Some(s) = write.get_mut(&job.config.name) {
-                    s.last_error = Some("Timeout".into());
-                    error!("Job {} timed out", job.config.name);
-                }
+                state::upsert_job(
+                    &pool,
+                    &job.config.name,
+                    state::JobStatus::Running,
+                    Some(Utc::now()),
+                    None,
+                    attempts,
+                    Some("Timeout".into()),
+                )
+                .await
+                .ok();
             }
         }
     }
 
-    let mut write = state.write().await;
-    if let Some(s) = write.get_mut(&job.config.name) {
-        s.status = JobStatus::Failed;
-        error!("Job {} exhausted retries", job.config.name);
-    }
+    state::upsert_job(
+        &pool,
+        &job.config.name,
+        state::JobStatus::Failed,
+        Some(Utc::now()),
+        None,
+        attempts,
+        Some("Retries exhausted".into()),
+    )
+    .await
+    .ok();
 }
 
 async fn run_command(cmd: &str) -> anyhow::Result<()> {

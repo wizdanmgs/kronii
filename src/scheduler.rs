@@ -1,27 +1,32 @@
 use chrono::Utc;
+use sqlx::SqlitePool;
 use tokio::time::{Duration, sleep};
-use tracing::info;
 
 use crate::job::Job;
-use crate::state::SharedState;
+use crate::state;
 use crate::worker::execute_job;
 
-pub async fn start_scheduler(jobs: Vec<Job>, state: SharedState) {
+pub async fn start_scheduler(jobs: Vec<Job>, pool: SqlitePool) {
     for job in jobs {
-        let state_clone = state.clone();
-        tokio::spawn(schedule_job(job, state_clone));
+        let pool_clone = pool.clone();
+        tokio::spawn(schedule_job(job, pool_clone));
     }
 }
 
-async fn schedule_job(job: Job, state: SharedState) {
+async fn schedule_job(job: Job, pool: SqlitePool) {
     loop {
         if let Some(next) = job.next_run() {
-            {
-                let mut write = state.write().await;
-                if let Some(s) = write.get_mut(&job.config.name) {
-                    s.next_run = Some(next);
-                }
-            }
+            state::upsert_job(
+                &pool,
+                &job.config.name,
+                state::JobStatus::Idle,
+                None,
+                Some(next),
+                0,
+                None,
+            )
+            .await
+            .ok();
 
             let now = Utc::now();
             let duration = next - now;
@@ -30,13 +35,11 @@ async fn schedule_job(job: Job, state: SharedState) {
 
             sleep(sleep_duration).await;
 
-            info!("Triggering job: {}", job.config.name);
-
             let job_clone = job.clone();
-            let state_clone = state.clone();
-            
+            let pool_clone = pool.clone();
+
             tokio::spawn(async move {
-                execute_job(job_clone, state_clone).await;
+                execute_job(job_clone, pool_clone).await;
             });
         }
     }
