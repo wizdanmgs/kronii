@@ -1,5 +1,5 @@
 use chrono::Utc;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::time::Instant;
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
@@ -8,7 +8,7 @@ use crate::job::Job;
 use crate::metrics::*;
 use crate::state;
 
-pub async fn execute_job(job: Job, pool: SqlitePool) {
+pub async fn execute_job(job: Job, pool: PgPool) {
     JOB_RUNNING.inc();
     JOB_EXECUTIONS.with_label_values(&[&job.config.name]).inc();
 

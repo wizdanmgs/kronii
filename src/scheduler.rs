@@ -1,33 +1,29 @@
-use chrono::Utc;
-use sqlx::SqlitePool;
 use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::Utc;
+use sqlx::PgPool;
 use tokio::sync::Semaphore;
-use tokio::time::{Duration, sleep};
+use tokio::time::sleep;
+use tracing::{error, info};
 
 use crate::job::Job;
-use crate::worker::execute_job;
-use crate::{lock, state};
+use crate::{lock, state, worker};
 
-pub async fn start_scheduler(
-    jobs: Vec<Job>,
-    pool: SqlitePool,
-    semaphore: Arc<Semaphore>,
-    instance_id: String,
-) {
+pub async fn start_scheduler(jobs: Vec<Job>, pool: PgPool, semaphore: Arc<Semaphore>) {
     for job in jobs {
-        tokio::spawn(schedule_job(
-            job,
-            pool.clone(),
-            semaphore.clone(),
-            instance_id.clone(),
-        ));
+        let pool_clone = pool.clone();
+        let sem_clone = semaphore.clone();
+
+        tokio::spawn(schedule_job(job, pool_clone, sem_clone));
     }
 }
 
-async fn schedule_job(job: Job, pool: SqlitePool, semaphore: Arc<Semaphore>, instance_id: String) {
+async fn schedule_job(job: Job, pool: PgPool, semaphore: Arc<Semaphore>) {
     loop {
         if let Some(next) = job.next_run() {
-            state::upsert_job(
+            // Persist next_run state
+            if let Err(e) = state::upsert_job(
                 &pool,
                 &job.config.name,
                 state::JobStatus::Idle,
@@ -37,7 +33,9 @@ async fn schedule_job(job: Job, pool: SqlitePool, semaphore: Arc<Semaphore>, ins
                 None,
             )
             .await
-            .ok();
+            {
+                error!("Failed to persist next_run: {}", e);
+            }
 
             let now = Utc::now();
             let duration = next - now;
@@ -46,33 +44,44 @@ async fn schedule_job(job: Job, pool: SqlitePool, semaphore: Arc<Semaphore>, ins
 
             sleep(sleep_duration).await;
 
-            // Attempt distributed lock
-            let acquired = lock::try_acquire_lock(&pool, &job.config.name, &instance_id, 60)
-                .await
-                .unwrap_or(false);
+            // Try distributed lock
+            let lock_tx = match lock::try_acquire_lock(&pool, &job.config.name).await {
+                Ok(Some(tx)) => tx,
+                Ok(None) => {
+                    info!("Another instance holds lock for {}", job.config.name);
+                    continue;
+                }
+                Err(e) => {
+                    error!("Lock error: {}", e);
+                    continue;
+                }
+            };
 
-            if !acquired {
-                // Another instance holds the lock
-                continue;
-            }
-
-            // Acquire worker permit before spawning
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            // Acquire worker pool permit BEFORE spawning
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
 
             let job_clone = job.clone();
             let pool_clone = pool.clone();
-            let instance_clone = instance_id.clone();
 
             tokio::spawn(async move {
-                let _permit = permit; // dropped automatically after spawn
+                let _permit = permit; // auto-release on drop
 
-                // Execute job
-                execute_job(job_clone.clone(), pool_clone.clone()).await;
+                // keep transaction alive while job runs
+                let mut tx = lock_tx;
 
-                // Early lock release
-                lock::release_lock(&pool_clone, &job_clone.config.name, &instance_clone)
-                    .await
-                    .unwrap();
+                worker::execute_job(job_clone.clone(), pool_clone.clone()).await;
+
+                // Release lock explicitly
+                let key = lock::lock_key(&job_clone.config.name);
+                let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+                    .bind(key)
+                    .execute(&mut *tx)
+                    .await;
+
+                let _ = tx.commit().await;
             });
         }
     }

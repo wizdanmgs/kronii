@@ -1,50 +1,31 @@
-use chrono::{Duration, Utc};
-use sqlx::SqlitePool;
+use sqlx::{PgPool, Postgres, Transaction};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
-pub async fn try_acquire_lock(
-    pool: &SqlitePool,
-    job_name: &str,
-    instance_id: &str,
-    lease_seconds: i64,
-) -> anyhow::Result<bool> {
-    let now = Utc::now();
-    let lock_until = now + Duration::seconds(lease_seconds);
-
-    let result = sqlx::query(
-        r#"
-        INSERT INTO job_lock (job_name, locked_until, locked_by)
-        VALUES (?1, ?2, ?3)
-        ON CONFLICT(job_name) DO UPDATE SET
-            locked_until = excluded.locked_until,
-            locked_by = excluded.locked_by
-        WHERE job_lock.locked_until <= ?4
-        "#,
-    )
-    .bind(job_name)
-    .bind(lock_until.to_rfc3339())
-    .bind(instance_id)
-    .bind(now.to_rfc3339())
-    .execute(pool)
-    .await?;
-
-    Ok(result.rows_affected() > 0)
+/// Convert job name into i64 lock key
+pub fn lock_key(job_name: &str) -> i64 {
+    let mut hasher = DefaultHasher::new();
+    job_name.hash(&mut hasher);
+    hasher.finish() as i64
 }
 
-pub async fn release_lock(
-    pool: &SqlitePool,
+pub async fn try_acquire_lock<'c>(
+    pool: &PgPool,
     job_name: &str,
-    instance_id: &str,
-) -> anyhow::Result<()> {
-    sqlx::query(
-        r#"
-        DELETE FROM job_lock
-        WHERE job_name = ?1 AND locked_by = ?2
-        "#,
-    )
-    .bind(job_name)
-    .bind(instance_id)
-    .execute(pool)
-    .await?;
+) -> anyhow::Result<Option<Transaction<'c, Postgres>>> {
+    let mut tx = pool.begin().await?;
 
-    Ok(())
+    let key = lock_key(job_name);
+
+    let row: (bool,) = sqlx::query_as("SELECT pg_try_advisory_lock($1)")
+        .bind(key)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    if row.0 {
+        Ok(Some(tx)) // lock acquired, keep transaction alive
+    } else {
+        tx.rollback().await?;
+        Ok(None)
+    }
 }

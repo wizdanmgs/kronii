@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 #[derive(Debug, Clone)]
 pub enum JobStatus {
@@ -21,7 +21,7 @@ impl JobStatus {
 }
 
 pub async fn upsert_job(
-    pool: &SqlitePool,
+    pool: &PgPool,
     name: &str,
     status: JobStatus,
     last_run: Option<DateTime<Utc>>,
@@ -32,7 +32,7 @@ pub async fn upsert_job(
     sqlx::query(
         r#"
         INSERT INTO job_state (name, status, last_run, next_run, attempts, last_error, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT(name) DO UPDATE SET
             status = excluded.status,
             last_run = excluded.last_run,

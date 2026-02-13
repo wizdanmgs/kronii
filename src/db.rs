@@ -1,8 +1,8 @@
-use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 
-pub async fn init_db(database_url: &str) -> anyhow::Result<SqlitePool> {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+pub async fn init_db(database_url: &str) -> anyhow::Result<PgPool> {
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
         .connect(database_url)
         .await?;
 
@@ -11,7 +11,7 @@ pub async fn init_db(database_url: &str) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
-async fn create_tables(pool: &SqlitePool) -> anyhow::Result<()> {
+async fn create_tables(pool: &PgPool) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS job_state (
@@ -22,18 +22,6 @@ async fn create_tables(pool: &SqlitePool) -> anyhow::Result<()> {
             attempts INTEGER NOT NULL DEFAULT 0,
             last_error TEXT,
             updated_at TEXT NOT NULL
-        );
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS job_lock (
-            job_name TEXT PRIMARY KEY,
-            locked_until TEXT NOT NULL,
-            locked_by TEXT NOT NULL
         );
         "#,
     )
