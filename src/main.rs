@@ -1,6 +1,7 @@
 mod config;
 mod db;
 mod job;
+mod lock;
 mod metrics;
 mod scheduler;
 mod state;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tracing_subscriber::FmtSubscriber;
+use uuid::Uuid;
 
 #[derive(Parser)]
 struct Args {
@@ -26,11 +28,13 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize tracing
     let subscriber = FmtSubscriber::new();
     tracing::subscriber::set_global_default(subscriber)?;
 
     let args = Args::parse();
 
+    // Load config
     let contents = fs::read_to_string(args.config)?;
     let config: config::Config = serde_yaml_ng::from_str(&contents)?;
 
@@ -40,18 +44,26 @@ async fn main() -> anyhow::Result<()> {
         .map(job::Job::new)
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Db as a state store
+    // Init DB
     let pool = db::init_db("sqlite:scheduler.db").await?;
+
+    // Instance ID for distributed locking
+    let instance_id = Uuid::new_v4().to_string();
+    println!("Instance ID: {}", instance_id);
+
+    // Semaphore to limit concurrency
+    let semaphore = Arc::new(Semaphore::new(args.max_concurrency));
 
     // Init metrics
     metrics::init_metrics();
 
-    // Semaphore to limit concurrency
-    let semaphore = Arc::new(Semaphore::new(args.max_concurrency));
-    scheduler::start_scheduler(jobs, pool.clone(), semaphore.clone()).await;
+    // Start scheduler
+    scheduler::start_scheduler(jobs, pool.clone(), semaphore.clone(), instance_id.clone()).await;
 
+    // Start metrics server
     tokio::spawn(start_http_server());
 
+    // Graceful shutdown
     tokio::signal::ctrl_c().await?;
     println!("Shutting down gracefully...");
 

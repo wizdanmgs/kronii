@@ -28,5 +28,17 @@ async fn create_tables(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS job_lock (
+            job_name TEXT PRIMARY KEY,
+            locked_until TEXT NOT NULL,
+            locked_by TEXT NOT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
