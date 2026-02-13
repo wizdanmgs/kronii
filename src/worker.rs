@@ -1,12 +1,19 @@
 use chrono::Utc;
 use sqlx::SqlitePool;
+use std::time::Instant;
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 
 use crate::job::Job;
+use crate::metrics::*;
 use crate::state;
 
 pub async fn execute_job(job: Job, pool: SqlitePool) {
+    JOB_RUNNING.inc();
+    JOB_EXECUTIONS.with_label_values(&[&job.config.name]).inc();
+
+    let start = Instant::now();
+
     let mut attempts = 0;
 
     state::upsert_job(
@@ -32,6 +39,13 @@ pub async fn execute_job(job: Job, pool: SqlitePool) {
 
         match result {
             Ok(Ok(_)) => {
+                let duration = start.elapsed().as_secs_f64();
+
+                JOB_DURATION
+                    .with_label_values(&[&job.config.name])
+                    .observe(duration);
+                JOB_RUNNING.dec();
+
                 state::upsert_job(
                     &pool,
                     &job.config.name,
@@ -47,6 +61,9 @@ pub async fn execute_job(job: Job, pool: SqlitePool) {
                 return;
             }
             Ok(Err(e)) => {
+                JOB_FAILURES.with_label_values(&[&job.config.name]).inc();
+                JOB_RUNNING.dec();
+
                 state::upsert_job(
                     &pool,
                     &job.config.name,
@@ -60,6 +77,9 @@ pub async fn execute_job(job: Job, pool: SqlitePool) {
                 .ok();
             }
             Err(_) => {
+                JOB_FAILURES.with_label_values(&[&job.config.name]).inc();
+                JOB_RUNNING.dec();
+
                 state::upsert_job(
                     &pool,
                     &job.config.name,
@@ -74,6 +94,9 @@ pub async fn execute_job(job: Job, pool: SqlitePool) {
             }
         }
     }
+
+    JOB_FAILURES.with_label_values(&[&job.config.name]).inc();
+    JOB_RUNNING.dec();
 
     state::upsert_job(
         &pool,
